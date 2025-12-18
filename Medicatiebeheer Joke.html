@@ -1,0 +1,1165 @@
+<!doctype html>
+<html lang="nl" class="h-full">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Medicatiebeheer Systeem</title>
+
+  <!-- ✅ Canva SDK verwijderd -->
+  <!-- <script src="/_sdk/data_sdk.js"></script> -->
+  <!-- <script src="/_sdk/element_sdk.js"></script> -->
+
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <style>
+    body { box-sizing: border-box; }
+
+    @media print {
+      body * { visibility: hidden; }
+      .print-content, .print-content * { visibility: visible; }
+      .print-content { position: absolute; left: 0; top: 0; width: 100%; }
+      .no-print { display: none !important; }
+    }
+
+    .moment-card { break-inside: avoid; page-break-inside: avoid; }
+
+    .toast {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: #10b981;
+      color: white;
+      padding: 16px 24px;
+      border-radius: 8px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      z-index: 10000;
+      animation: slideIn 0.3s ease;
+    }
+
+    @keyframes slideIn {
+      from { transform: translateX(400px); opacity: 0; }
+      to   { transform: translateX(0); opacity: 1; }
+    }
+
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: rgba(0,0,0,0.7);
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .modal-content {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      max-width: 500px;
+      width: 100%;
+      max-height: 90%;
+      overflow-y: auto;
+    }
+
+    .preview-modal-content {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      width: 95%;
+      height: 95%;
+      overflow-y: auto;
+    }
+  </style>
+  <style>@view-transition { navigation: auto; }</style>
+
+  <!-- ✅ SDK-VERVANGING (LocalStorage) -->
+  <script>
+    (function () {
+      const STORAGE_KEY = "medicatiebeheer_localdb_v1";
+
+      function safeParse(json, fallback) {
+        try { return JSON.parse(json); } catch { return fallback; }
+      }
+
+      function loadAll() {
+        return safeParse(localStorage.getItem(STORAGE_KEY) || "[]", []);
+      }
+
+      function saveAll(arr) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(arr));
+      }
+
+      function genId(prefix) {
+        return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      }
+
+      // Zorg dat elk record een __backendId heeft (zoals Canva)
+      function ensureBackendId(rec) {
+        if (!rec.__backendId) rec.__backendId = genId(rec.__type || "rec");
+        return rec;
+      }
+
+      let handler = null;
+
+      window.dataSdk = {
+        async init(h) {
+          handler = h;
+          const data = loadAll();
+          handler?.onDataChanged?.(data);
+          return { isOk: true };
+        },
+        async create(record) {
+          const data = loadAll();
+          const rec = ensureBackendId({ ...record });
+
+          data.push(rec);
+          saveAll(data);
+          handler?.onDataChanged?.(data);
+          return { isOk: true };
+        },
+        async update(record) {
+          const data = loadAll();
+          const rec = ensureBackendId({ ...record });
+
+          const idx = data.findIndex(x => x.__backendId === rec.__backendId);
+          if (idx === -1) {
+            // Als niet gevonden: voeg toe (fail-safe)
+            data.push(rec);
+          } else {
+            data[idx] = rec;
+          }
+
+          saveAll(data);
+          handler?.onDataChanged?.(data);
+          return { isOk: true };
+        }
+      };
+
+      // Minimal elementSdk: config + init + setConfig zodat jouw code blijft werken
+      window.elementSdk = {
+        config: null,
+        _onConfigChange: null,
+        async init(opts) {
+          // Gebruik defaultConfig uit jouw script zodra die bestaat; anders lege basis
+          // (we zetten in jouw code later nog een init aan, dus dit blijft ok)
+          this._onConfigChange = opts?.onConfigChange || null;
+
+          // Neem defaultConfig als startpunt (wordt in jouw script gedefinieerd)
+          const fallback = (window.defaultConfig || {});
+          this.config = { ...fallback };
+
+          // Simuleer Canva: roep meteen config callback op
+          try { await this._onConfigChange?.(this.config); } catch {}
+
+          return { isOk: true };
+        },
+        async setConfig(partial) {
+          this.config = { ...(this.config || {}), ...(partial || {}) };
+          try { await this._onConfigChange?.(this.config); } catch {}
+          return { isOk: true };
+        }
+      };
+    })();
+  </script>
+ </head>
+
+ <body class="h-full w-full bg-gray-50">
+  <div id="app" class="h-full w-full flex flex-col">
+   <!-- Header met patiëntgegevens -->
+   <div id="patientHeader" class="bg-gradient-to-r from-blue-600 to-blue-800 text-white p-6 shadow-lg no-print">
+    <div class="flex justify-between items-start mb-2">
+     <h1 class="text-2xl font-bold">Medicatiebeheer Systeem</h1>
+     <div id="liveClock" class="text-sm bg-white/20 px-4 py-2 rounded-lg font-mono"></div>
+    </div>
+    <div id="patientInfo" class="text-sm space-y-1"></div>
+   </div>
+
+   <!-- Tabbladen -->
+   <div class="bg-white shadow-sm border-b no-print">
+    <div class="flex overflow-x-auto">
+      <button onclick="switchTab('dagelijks')" class="tab-btn px-6 py-3 font-medium border-b-2 border-transparent hover:border-blue-500 transition-colors" data-tab="dagelijks"> 📅 Dagelijks </button>
+      <button onclick="switchTab('indien-nodig')" class="tab-btn px-6 py-3 font-medium border-b-2 border-transparent hover:border-blue-500 transition-colors" data-tab="indien-nodig"> 🆘 Indien nodig </button>
+      <button onclick="switchTab('schema')" class="tab-btn px-6 py-3 font-medium border-b-2 border-transparent hover:border-blue-500 transition-colors" data-tab="schema"> 📋 Medicatieschema </button>
+      <button onclick="switchTab('beheer')" class="tab-btn px-6 py-3 font-medium border-b-2 border-transparent hover:border-blue-500 transition-colors" data-tab="beheer"> ⚙️ Schema beheer </button>
+      <button onclick="switchTab('overzicht')" class="tab-btn px-6 py-3 font-medium border-b-2 border-transparent hover:border-blue-500 transition-colors" data-tab="overzicht"> 📊 Overzicht vandaag </button>
+      <button onclick="switchTab('totaal')" class="tab-btn px-6 py-3 font-medium border-b-2 border-transparent hover:border-blue-500 transition-colors" data-tab="totaal"> 📈 Totaal overzicht </button>
+      <button onclick="switchTab('extra')" class="tab-btn px-6 py-3 font-medium border-b-2 border-transparent hover:border-blue-500 transition-colors" data-tab="extra"> ➕ Extra functies </button>
+      <button onclick="switchTab('verslagen')" class="tab-btn px-6 py-3 font-medium border-b-2 border-transparent hover:border-blue-500 transition-colors" data-tab="verslagen"> 📄 Verslagen </button>
+    </div>
+   </div>
+
+   <!-- Tab content -->
+   <div id="tabContent" class="flex-1 overflow-y-auto p-6"></div>
+  </div>
+
+  <script>
+    // Globale state
+    let allData = [];
+    let schemaData = [];
+    let currentTab = 'dagelijks';
+    let editingMedication = null;
+    let isInitializing = false;
+
+    // ⚠️ belangrijk: zodat elementSdk-stub defaultConfig kan lezen indien nodig
+    window.defaultConfig = {
+      patient_name: "De Coninck, Joke",
+      patient_insz: "79060835044",
+      patient_diagnoses: "Depressie, Epilepsie, Migraine",
+      patient_allergies: "geen",
+      patient_doctor: "Dr. Etienne Van Brempt",
+      primary_color: "#2563eb",
+      secondary_color: "#ffffff",
+      text_color: "#1f2937",
+      button_color: "#3b82f6",
+      accent_color: "#10b981",
+      font_family: "system-ui",
+      font_size: 16
+    };
+
+    // Verplichte medicatielijst (standaard schema)
+    const defaultMedications = [
+      // Dagelijks - Ontbijt
+      { medication_name: 'DEPAKINE', dosage: '½', frequency: 'dagelijks', moment: 'Ontbijt', indication: '', is_active: true },
+      { medication_name: 'PANTOMED', dosage: '1', frequency: 'dagelijks', moment: 'Ontbijt', indication: '', is_active: true },
+      { medication_name: 'TOPAMAX', dosage: '1', frequency: 'dagelijks', moment: 'Ontbijt', indication: '', is_active: true },
+      { medication_name: 'DULOXETINE EG 60 mg', dosage: '1', frequency: 'dagelijks', moment: 'Ontbijt', indication: '', is_active: true },
+      { medication_name: 'QUETIAPINE RETARD EG 200 mg', dosage: '1', frequency: 'dagelijks', moment: 'Ontbijt', indication: '', is_active: true },
+      { medication_name: 'SUPRADYN ENERGY', dosage: '1', frequency: 'dagelijks', moment: 'Ontbijt', indication: '', is_active: true },
+      { medication_name: 'DICLOFENAC PATCH 140 mg', dosage: '1', frequency: 'dagelijks', moment: 'Ontbijt', indication: '', is_active: true },
+      { medication_name: 'VOLTAREN EMULGEL FORTE 2%', dosage: '1', frequency: 'dagelijks', moment: 'Ontbijt', indication: '', is_active: true },
+
+      // Dagelijks - Middagmaal
+      { medication_name: 'DULOXETINE EG 60 mg', dosage: '1', frequency: 'dagelijks', moment: 'Middagmaal', indication: '', is_active: true },
+
+      // Dagelijks - Avondmaal
+      { medication_name: 'DEPAKINE', dosage: '½', frequency: 'dagelijks', moment: 'Avondmaal', indication: '', is_active: true },
+      { medication_name: 'TOPAMAX', dosage: '1', frequency: 'dagelijks', moment: 'Avondmaal', indication: '', is_active: true },
+      { medication_name: 'DULOXETINE EG 60 mg', dosage: '1', frequency: 'dagelijks', moment: 'Avondmaal', indication: '', is_active: true },
+      { medication_name: 'QUETIAPINE SANDOZ 100 mg', dosage: '1', frequency: 'dagelijks', moment: 'Avondmaal', indication: '', is_active: true },
+      { medication_name: 'DICLOFENAC PATCH 140 mg', dosage: '1', frequency: 'dagelijks', moment: 'Avondmaal', indication: '', is_active: true },
+      { medication_name: 'VOLTAREN EMULGEL FORTE 2%', dosage: '1', frequency: 'dagelijks', moment: 'Avondmaal', indication: '', is_active: true },
+
+      // Dagelijks - Slapengaan
+      { medication_name: 'ZOLPIDEM EG 10 mg', dosage: '1', frequency: 'dagelijks', moment: 'Slapengaan', indication: '', is_active: true },
+      { medication_name: 'QUETIAPINE', dosage: '1', frequency: 'dagelijks', moment: 'Slapengaan', indication: '', is_active: true },
+
+      // Indien nodig
+      { medication_name: 'ALGOTRA 325/37,5 mg', dosage: '1', frequency: 'indien-nodig', moment: '', indication: 'bij pijn (Voor ontbijt | Tussen O-M | Tussen M-A | Na avondeten)', is_active: true },
+      { medication_name: 'TRAMADOL/PARACETAMOL 325/37,5 mg', dosage: '1', frequency: 'indien-nodig', moment: '', indication: 'bij pijn (Voor ontbijt | Tussen O-M | Tussen M-A | Na avondeten)', is_active: true },
+      { medication_name: 'ZOLPIDEM EG 10 mg (EXTRA)', dosage: '½', frequency: 'indien-nodig', moment: '', indication: 'extra dosis – insomnia (Bij niet kunnen slapen)', is_active: true },
+      { medication_name: 'TRADONAL 2 ml', dosage: '1', frequency: 'indien-nodig', moment: '', indication: 'max 3x per week (Na ontbijt)', is_active: true },
+      { medication_name: 'ZOLMITRIPTAN 2,5 mg', dosage: '1', frequency: 'indien-nodig', moment: '', indication: 'bij migraine (Vrije tijd)', is_active: true },
+      { medication_name: 'DEPO-PROVERA 150 mg/ml', dosage: '1 ml', frequency: 'indien-nodig', moment: '', indication: 'om de 3 maanden (Na ontbijt)', is_active: true }
+    ];
+
+    // Data handler voor SDK
+    const dataHandler = {
+      onDataChanged(data) {
+        allData = data;
+
+        // schemaData zoals in jouw code
+        schemaData = data.filter(item => item.__type === 'schema' && item.is_active);
+
+        // Update patient info
+        updatePatientInfo();
+
+        // Alleen refreshen als we niet aan het initialiseren zijn
+        if (!isInitializing) {
+          switchTab(currentTab);
+        }
+      }
+    };
+
+    // Brussels tijd ophalen
+    function getBrusselsTime() {
+      return new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Brussels' }));
+    }
+
+    // Live klok updaten
+    function updateClock() {
+      const clockEl = document.getElementById('liveClock');
+      if (clockEl) {
+        const now = getBrusselsTime();
+        const timeStr = now.toLocaleTimeString('nl-BE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const dateStr = now.toLocaleDateString('nl-BE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+        clockEl.innerHTML = `🕐 ${dateStr} - ${timeStr}`;
+      }
+    }
+
+    // Initialisatie
+    async function init() {
+      const initResult = await window.dataSdk.init(dataHandler);
+      if (!initResult.isOk) {
+        showToast('❌ Kon database niet laden', 'error');
+        return;
+      }
+
+      // Wacht op eerste data load
+      await new Promise(resolve => setTimeout(resolve, 200));
+
+      // Check of database leeg is (geen schema items)
+      const schemaItems = allData.filter(item => item.__type === 'schema');
+
+      if (schemaItems.length === 0) {
+        isInitializing = true;
+        showToast('📋 Standaard medicatielijst wordt geladen...');
+
+        for (const med of defaultMedications) {
+          const medication = {
+            __type: 'schema',
+            ...med,
+            created_at: getBrusselsTime().toISOString()
+          };
+
+          const result = await window.dataSdk.create(medication);
+          if (!result.isOk) {
+            console.error('Failed to create medication:', med.medication_name);
+          }
+
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+
+        isInitializing = false;
+        showToast('✓ Standaard medicatielijst geladen');
+
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+
+      // Element SDK init (stub blijft werken)
+      if (window.elementSdk) {
+        window.elementSdk.init({
+          defaultConfig,
+          onConfigChange: async (config) => {
+            updatePatientInfo();
+
+            // Update kleuren
+            document.querySelectorAll('.bg-blue-600').forEach(el => {
+              el.style.backgroundColor = config.primary_color || defaultConfig.primary_color;
+            });
+            document.querySelectorAll('.bg-blue-500').forEach(el => {
+              el.style.backgroundColor = config.button_color || defaultConfig.button_color;
+            });
+            document.querySelectorAll('.text-blue-600').forEach(el => {
+              el.style.color = config.primary_color || defaultConfig.primary_color;
+            });
+
+            // Update font
+            const customFont = config.font_family || defaultConfig.font_family;
+            document.body.style.fontFamily = `${customFont}, system-ui, -apple-system, sans-serif`;
+
+            // Update font size
+            const baseSize = config.font_size || defaultConfig.font_size;
+            document.body.style.fontSize = `${baseSize}px`;
+          },
+          mapToCapabilities: (config) => ({
+            recolorables: [],
+            borderables: [],
+            fontEditable: null,
+            fontSizeable: null
+          }),
+          mapToEditPanelValues: (config) => new Map([
+            ['patient_name', config.patient_name || defaultConfig.patient_name],
+            ['patient_insz', config.patient_insz || defaultConfig.patient_insz],
+            ['patient_diagnoses', config.patient_diagnoses || defaultConfig.patient_diagnoses],
+            ['patient_allergies', config.patient_allergies || defaultConfig.patient_allergies],
+            ['patient_doctor', config.patient_doctor || defaultConfig.patient_doctor]
+          ])
+        });
+      }
+
+      // Start live klok
+      updateClock();
+      setInterval(updateClock, 1000);
+
+      // Check middernacht en refresh
+      checkMidnight();
+      setInterval(checkMidnight, 60000);
+
+      switchTab('dagelijks');
+    }
+
+    function updatePatientInfo() {
+      const config = window.elementSdk?.config || defaultConfig;
+      const info = document.getElementById('patientInfo');
+      info.innerHTML = `
+        <div class="font-bold text-lg">${config.patient_name || defaultConfig.patient_name}</div>
+        <div>INSZ: ${config.patient_insz || defaultConfig.patient_insz} | Diagnoses: ${config.patient_diagnoses || defaultConfig.patient_diagnoses}</div>
+        <div>Allergieën: ${config.patient_allergies || defaultConfig.patient_allergies} | Arts: ${config.patient_doctor || defaultConfig.patient_doctor}</div>
+      `;
+    }
+
+    function checkMidnight() {
+      const now = getBrusselsTime();
+      if (now.getHours() === 0 && now.getMinutes() === 0) {
+        if (currentTab === 'overzicht') {
+          showToast('🌙 Nieuwe dag begonnen - overzicht ververst');
+          switchTab('overzicht');
+        }
+      }
+    }
+
+    function switchTab(tab) {
+      currentTab = tab;
+
+      // Update tab styling
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        if (btn.dataset.tab === tab) {
+          btn.classList.add('border-blue-500', 'text-blue-600');
+        } else {
+          btn.classList.remove('border-blue-500', 'text-blue-600');
+        }
+      });
+
+      const content = document.getElementById('tabContent');
+
+      switch(tab) {
+        case 'dagelijks':
+          content.innerHTML = renderDagelijks();
+          break;
+        case 'indien-nodig':
+          content.innerHTML = renderIndienNodig();
+          break;
+        case 'schema':
+          content.innerHTML = renderMedicatieschema();
+          break;
+        case 'beheer':
+          content.innerHTML = renderBeheer();
+          break;
+        case 'overzicht':
+          content.innerHTML = renderOverzicht();
+          break;
+        case 'totaal':
+          content.innerHTML = renderTotaalOverzicht();
+          break;
+        case 'extra':
+          content.innerHTML = renderExtra();
+          break;
+        case 'verslagen':
+          content.innerHTML = renderVerslagen();
+          break;
+      }
+    }
+
+    function renderDagelijks() {
+      const moments = ['Ontbijt', 'Middagmaal', 'Avondmaal', 'Slapengaan'];
+      const dailyMeds = schemaData.filter(m => m.frequency === 'dagelijks');
+
+      let html = '<div class="max-w-4xl mx-auto space-y-6">';
+
+      moments.forEach(moment => {
+        const meds = dailyMeds.filter(m => m.moment === moment);
+        if (meds.length === 0) return;
+
+        html += `
+          <div class="moment-card bg-white rounded-lg shadow-md p-6">
+            <h3 class="text-xl font-bold mb-4 text-blue-600">${moment}</h3>
+            <div class="space-y-3">
+        `;
+
+        meds.forEach(med => {
+          html += `
+            <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+              <div class="flex-1">
+                <div class="font-semibold text-lg">${med.medication_name}</div>
+                <div class="text-gray-600">${med.dosage}</div>
+              </div>
+              <button onclick="window.__userClickedRegister = true; registerAdministration('${med.__backendId}', '${moment}')"
+                      class="bg-blue-500 hover:bg-blue-600 text-white px-6 py-3 rounded-lg font-medium transition-colors">
+                ➕ Registreer toediening
+              </button>
+            </div>
+          `;
+        });
+
+        html += '</div></div>';
+      });
+
+      html += '</div>';
+      return html;
+    }
+
+    function renderIndienNodig() {
+      const asNeededMeds = schemaData.filter(m => m.frequency === 'indien-nodig');
+
+      if (asNeededMeds.length === 0) {
+        return '<div class="text-center text-gray-500 py-12">Geen indien-nodig medicatie toegevoegd</div>';
+      }
+
+      let html = '<div class="max-w-4xl mx-auto"><div class="bg-white rounded-lg shadow-md p-6"><h3 class="text-xl font-bold mb-4 text-orange-600">Indien nodig medicatie</h3><div class="space-y-3">';
+
+      asNeededMeds.forEach(med => {
+        html += `
+          <div class="flex items-start justify-between p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+            <div class="flex-1">
+              <div class="font-semibold text-lg">${med.medication_name}</div>
+              <div class="text-gray-600">${med.dosage}</div>
+              <div class="text-sm text-gray-500 mt-1">Indicatie: ${med.indication}</div>
+            </div>
+            <button onclick="window.__userClickedRegister = true; registerAdministration('${med.__backendId}', 'Indien nodig')"
+                    class="bg-orange-500 hover:bg-orange-600 text-white px-6 py-3 rounded-lg font-medium transition-colors">
+                    ➕ Registreer toediening
+            </button>
+          </div>
+        `;
+      });
+
+      html += '</div></div></div>';
+      return html;
+    }
+
+    function renderMedicatieschema() {
+      const config = window.elementSdk?.config || defaultConfig;
+      const moments = ['Ontbijt', 'Middagmaal', 'Avondmaal', 'Slapengaan'];
+      const dailyMeds = schemaData.filter(m => m.frequency === 'dagelijks');
+      const asNeededMeds = schemaData.filter(m => m.frequency === 'indien-nodig');
+
+      let html = `
+        <div class="max-w-4xl mx-auto space-y-6">
+          <div id="schemaPrintable" class="bg-white rounded-lg shadow-md p-6 print-content">
+            <div class="bg-gradient-to-r from-blue-600 to-blue-800 text-white p-6 rounded-t-lg -mx-6 -mt-6 mb-6">
+              <h2 class="text-2xl font-bold mb-2">Medicatieschema</h2>
+              <div class="text-sm space-y-1">
+                <div class="font-bold">${config.patient_name || defaultConfig.patient_name}</div>
+                <div>INSZ: ${config.patient_insz || defaultConfig.patient_insz} | Diagnoses: ${config.patient_diagnoses || defaultConfig.patient_diagnoses}</div>
+                <div>Allergieën: ${config.patient_allergies || defaultConfig.patient_allergies} | Arts: ${config.patient_doctor || defaultConfig.patient_doctor}</div>
+              </div>
+            </div>
+
+            <h3 class="text-lg font-bold mb-4">Dagelijkse medicatie</h3>
+            <table class="w-full border-collapse mb-6">
+              <thead>
+                <tr class="bg-gray-100">
+                  <th class="border border-gray-300 p-3 text-left">Moment</th>
+                  <th class="border border-gray-300 p-3 text-left">Medicatie</th>
+                  <th class="border border-gray-300 p-3 text-left">Dosering</th>
+                </tr>
+              </thead>
+              <tbody>
+      `;
+
+      moments.forEach(moment => {
+        const meds = dailyMeds.filter(m => m.moment === moment);
+        if (meds.length > 0) {
+          meds.forEach((med, idx) => {
+            html += `
+              <tr>
+                ${idx === 0 ? `<td class="border border-gray-300 p-3 font-semibold" rowspan="${meds.length}">${moment}</td>` : ''}
+                <td class="border border-gray-300 p-3">${med.medication_name}</td>
+                <td class="border border-gray-300 p-3">${med.dosage}</td>
+              </tr>
+            `;
+          });
+        }
+      });
+
+      html += '</tbody></table>';
+
+      if (asNeededMeds.length > 0) {
+        html += `
+          <h3 class="text-lg font-bold mb-4">Indien nodig medicatie</h3>
+          <table class="w-full border-collapse">
+            <thead>
+              <tr class="bg-gray-100">
+                <th class="border border-gray-300 p-3 text-left">Medicatie</th>
+                <th class="border border-gray-300 p-3 text-left">Dosering</th>
+                <th class="border border-gray-300 p-3 text-left">Indicatie</th>
+              </tr>
+            </thead>
+            <tbody>
+        `;
+
+        asNeededMeds.forEach(med => {
+          html += `
+            <tr>
+              <td class="border border-gray-300 p-3">${med.medication_name}</td>
+              <td class="border border-gray-300 p-3">${med.dosage}</td>
+              <td class="border border-gray-300 p-3">${med.indication}</td>
+            </tr>
+          `;
+        });
+
+        html += '</tbody></table>';
+      }
+
+      html += `
+            <div class="mt-6 text-sm text-gray-500">
+              Aangemaakt op: ${getBrusselsTime().toLocaleDateString('nl-BE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+            </div>
+          </div>
+
+          <div class="flex gap-4 no-print">
+            <button onclick="printSchema()" class="bg-blue-500 hover:bg-blue-600 text-white px-6 py-3 rounded-lg font-medium">
+              🖨️ Afdrukken
+            </button>
+            <button onclick="openSchemaPreviewTab()" class="bg-green-500 hover:bg-green-600 text-white px-6 py-3 rounded-lg font-medium">
+              🖼️ Preview schema (nieuw tabblad)
+            </button>
+          </div>
+        </div>
+      `;
+
+      return html;
+    }
+
+    function renderBeheer() {
+      let html = `
+        <div class="max-w-4xl mx-auto space-y-6">
+          <div class="bg-white rounded-lg shadow-md p-6">
+            <div class="flex justify-between items-center mb-6">
+              <h2 class="text-2xl font-bold">Schema beheer</h2>
+              <button onclick="showAddMedicationModal()" class="bg-blue-500 hover:bg-blue-600 text-white px-6 py-3 rounded-lg font-medium">
+                ➕ Medicatie toevoegen
+              </button>
+            </div>
+
+            <div class="space-y-3">
+      `;
+
+      schemaData.forEach(med => {
+        html += `
+          <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+            <div class="flex-1">
+              <div class="font-semibold text-lg">${med.medication_name}</div>
+              <div class="text-gray-600">${med.dosage} - ${med.frequency} ${med.moment ? `(${med.moment})` : ''}</div>
+              ${med.indication ? `<div class="text-sm text-gray-500">Indicatie: ${med.indication}</div>` : ''}
+            </div>
+            <div class="flex gap-2">
+              <button onclick='editMedication(${JSON.stringify(med).replace(/'/g, "&apos;")})' class="bg-yellow-500 hover:bg-yellow-600 text-white px-4 py-2 rounded-lg">
+                ✏️ Bewerken
+              </button>
+              <button onclick="deleteMedication('${med.__backendId}')" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg">
+                🗑️ Verwijderen
+              </button>
+            </div>
+          </div>
+        `;
+      });
+
+      if (schemaData.length === 0) {
+        html += '<div class="text-center text-gray-500 py-8">Nog geen medicatie toegevoegd</div>';
+      }
+
+      html += '</div></div></div>';
+      return html;
+    }
+
+    function renderOverzicht() {
+      const today = getBrusselsTime().toLocaleDateString('nl-BE');
+      const todayAdministrations = allData.filter(item => {
+        if (item.__type !== 'administration') return false;
+        const adminDate = new Date(item.administered_at);
+        const adminDateBrussels = new Date(adminDate.toLocaleString('en-US', { timeZone: 'Europe/Brussels' }));
+        return adminDateBrussels.toLocaleDateString('nl-BE') === today;
+      });
+
+      let html = `
+        <div class="max-w-4xl mx-auto">
+          <div class="bg-white rounded-lg shadow-md p-6">
+            <h2 class="text-2xl font-bold mb-6">Overzicht vandaag - ${today}</h2>
+      `;
+
+      if (todayAdministrations.length === 0) {
+        html += '<div class="text-center text-gray-500 py-8">Nog geen medicatie toegediend vandaag</div>';
+      } else {
+        html += '<div class="space-y-3">';
+
+        todayAdministrations.sort((a, b) => new Date(b.administered_at) - new Date(a.administered_at)).forEach(admin => {
+          const med = allData.find(m => m.__backendId === admin.medication_id);
+          const medName = med ? med.medication_name : 'Onbekend';
+          const time = new Date(admin.administered_at).toLocaleTimeString('nl-BE', { hour: '2-digit', minute: '2-digit' });
+
+          html += `
+            <div class="flex items-center justify-between p-4 bg-green-50 rounded-lg border-l-4 border-green-500">
+              <div class="flex-1">
+                <div class="font-semibold">${medName}</div>
+                <div class="text-sm text-gray-600">${time} - ${admin.moment}</div>
+              </div>
+              <button onclick="editAdministrationTime('${admin.__backendId}')" class="text-blue-600 hover:text-blue-800 px-3 py-1 rounded">
+                ⏰ Tijdstip aanpassen
+              </button>
+            </div>
+          `;
+        });
+
+        html += '</div>';
+      }
+
+      html += '</div></div>';
+      return html;
+    }
+
+    function renderTotaalOverzicht() {
+      const administrations = allData.filter(item => item.__type === 'administration');
+
+      const byDate = {};
+      administrations.forEach(admin => {
+        const adminDate = new Date(admin.administered_at);
+        const adminDateBrussels = new Date(adminDate.toLocaleString('en-US', { timeZone: 'Europe/Brussels' }));
+        const date = adminDateBrussels.toLocaleDateString('nl-BE');
+        if (!byDate[date]) byDate[date] = [];
+        byDate[date].push(admin);
+      });
+
+      const dates = Object.keys(byDate).sort((a, b) => {
+        const dateA = a.split('/').reverse().join('-');
+        const dateB = b.split('/').reverse().join('-');
+        return dateB.localeCompare(dateA);
+      });
+
+      let html = `
+        <div class="max-w-4xl mx-auto">
+          <div class="bg-white rounded-lg shadow-md p-6">
+            <h2 class="text-2xl font-bold mb-6">Totaal overzicht (alle periodes)</h2>
+      `;
+
+      if (dates.length === 0) {
+        html += '<div class="text-center text-gray-500 py-8">Nog geen medicatie toegediend</div>';
+      } else {
+        dates.forEach(date => {
+          html += `
+            <div class="mb-6">
+              <h3 class="text-lg font-semibold mb-3 text-blue-600">${date}</h3>
+              <div class="space-y-2">
+          `;
+
+          byDate[date].sort((a, b) => new Date(b.administered_at) - new Date(a.administered_at)).forEach(admin => {
+            const med = allData.find(m => m.__backendId === admin.medication_id);
+            const medName = med ? med.medication_name : 'Onbekend';
+            const time = new Date(admin.administered_at).toLocaleTimeString('nl-BE', { hour: '2-digit', minute: '2-digit' });
+
+            html += `
+              <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                <div class="flex-1">
+                  <span class="font-medium">${medName}</span>
+                  <span class="text-gray-600 ml-3">${time} - ${admin.moment}</span>
+                </div>
+                <button onclick="editAdministrationTime('${admin.__backendId}')" class="text-blue-600 hover:text-blue-800 text-sm px-2 py-1 rounded">
+                  ⏰ Aanpassen
+                </button>
+              </div>
+            `;
+          });
+
+          html += '</div></div>';
+        });
+      }
+
+      html += '</div></div>';
+      return html;
+    }
+
+    function renderExtra() {
+      return `
+        <div class="max-w-4xl mx-auto">
+          <div class="bg-white rounded-lg shadow-md p-6">
+            <h2 class="text-2xl font-bold mb-6">Extra functies</h2>
+            <div class="space-y-4">
+              <div class="p-4 bg-blue-50 rounded-lg">
+                <h3 class="font-semibold mb-2">📊 Statistieken</h3>
+                <p class="text-gray-600">Totaal aantal medicaties in schema: <span class="font-bold">${schemaData.length}</span></p>
+                <p class="text-gray-600">Totaal aantal toedieningen: <span class="font-bold">${allData.filter(i => i.__type === 'administration').length}</span></p>
+              </div>
+
+              <div class="p-4 bg-green-50 rounded-lg">
+                <h3 class="font-semibold mb-2">✅ Compliantie vandaag</h3>
+                <p class="text-gray-600">Toegediend vandaag: <span class="font-bold">${allData.filter(i => {
+                  if (i.__type !== 'administration') return false;
+                  const adminDate = new Date(i.administered_at);
+                  const adminDateBrussels = new Date(adminDate.toLocaleString('en-US', { timeZone: 'Europe/Brussels' }));
+                  return adminDateBrussels.toLocaleDateString('nl-BE') === getBrusselsTime().toLocaleDateString('nl-BE');
+                }).length}</span></p>
+              </div>
+
+              <button onclick="exportData()" class="w-full bg-purple-500 hover:bg-purple-600 text-white px-6 py-3 rounded-lg font-medium">
+                💾 Data exporteren (JSON)
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderVerslagen() {
+      return `
+        <div class="max-w-4xl mx-auto">
+          <div class="bg-white rounded-lg shadow-md p-6">
+            <h2 class="text-2xl font-bold mb-6">Verslagen & Rapporten</h2>
+            <div class="space-y-4">
+              <button onclick="generateWeekReport()" class="w-full bg-blue-500 hover:bg-blue-600 text-white px-6 py-3 rounded-lg font-medium text-left">
+                📅 Week rapport genereren
+              </button>
+              <button onclick="generateMonthReport()" class="w-full bg-green-500 hover:bg-green-600 text-white px-6 py-3 rounded-lg font-medium text-left">
+                📆 Maand rapport genereren
+              </button>
+              <div class="mt-6 p-4 bg-gray-50 rounded-lg">
+                <p class="text-sm text-gray-600">Rapporten worden binnenkort toegevoegd met gedetailleerde statistieken en grafieken.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    async function registerAdministration(medicationId, moment) {
+      // VEILIGHEIDSCHECK: Mag alleen via button click, nooit automatisch
+      if (!window.__userClickedRegister) {
+        console.error('❌ SECURITY: registerAdministration mag alleen via gebruiker-actie');
+        return;
+      }
+      window.__userClickedRegister = false;
+
+      const now = getBrusselsTime();
+      const administration = {
+        __type: 'administration',
+        medication_id: medicationId,
+        moment: moment,
+        administered_at: now.toISOString(),
+        created_at: now.toISOString()
+      };
+
+      const result = await window.dataSdk.create(administration);
+
+      if (result.isOk) {
+        showToast('✓ Medicatie geregistreerd');
+        if (currentTab === 'overzicht' || currentTab === 'totaal') {
+          setTimeout(() => switchTab(currentTab), 300);
+        }
+      } else {
+        showToast('❌ Registratie mislukt', 'error');
+      }
+    }
+
+    function showAddMedicationModal() {
+      const modal = document.createElement('div');
+      modal.className = 'modal-overlay';
+      modal.innerHTML = `
+        <div class="modal-content">
+          <h3 class="text-xl font-bold mb-4">Medicatie toevoegen</h3>
+          <form onsubmit="event.preventDefault(); submitMedication()">
+            <div class="space-y-4">
+              <div>
+                <label class="block text-sm font-medium mb-1">Medicatie naam</label>
+                <input type="text" id="medName" required class="w-full border border-gray-300 rounded-lg px-3 py-2">
+              </div>
+              <div>
+                <label class="block text-sm font-medium mb-1">Dosering</label>
+                <input type="text" id="medDosage" required placeholder="bijv. 1 tablet" class="w-full border border-gray-300 rounded-lg px-3 py-2">
+              </div>
+              <div>
+                <label class="block text-sm font-medium mb-1">Frequentie</label>
+                <select id="medFrequency" onchange="toggleMomentField()" class="w-full border border-gray-300 rounded-lg px-3 py-2">
+                  <option value="dagelijks">Dagelijks</option>
+                  <option value="indien-nodig">Indien nodig</option>
+                </select>
+              </div>
+              <div id="momentField">
+                <label class="block text-sm font-medium mb-1">Moment</label>
+                <select id="medMoment" class="w-full border border-gray-300 rounded-lg px-3 py-2">
+                  <option value="Ontbijt">Ontbijt</option>
+                  <option value="Middagmaal">Middagmaal</option>
+                  <option value="Avondmaal">Avondmaal</option>
+                  <option value="Slapengaan">Slapengaan</option>
+                </select>
+              </div>
+              <div id="indicationField" style="display:none;">
+                <label class="block text-sm font-medium mb-1">Indicatie</label>
+                <input type="text" id="medIndication" placeholder="Waarvoor wordt dit ingenomen?" class="w-full border border-gray-300 rounded-lg px-3 py-2">
+              </div>
+              <div class="flex gap-3 mt-6">
+                <button type="submit" class="flex-1 bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg font-medium">
+                  Opslaan
+                </button>
+                <button type="button" onclick="closeModal()" class="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-700 px-4 py-2 rounded-lg font-medium">
+                  Annuleren
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      `;
+      document.body.appendChild(modal);
+    }
+
+    function toggleMomentField() {
+      const frequency = document.getElementById('medFrequency').value;
+      document.getElementById('momentField').style.display = frequency === 'dagelijks' ? 'block' : 'none';
+      document.getElementById('indicationField').style.display = frequency === 'indien-nodig' ? 'block' : 'none';
+    }
+
+    async function submitMedication() {
+      const name = document.getElementById('medName').value;
+      const dosage = document.getElementById('medDosage').value;
+      const frequency = document.getElementById('medFrequency').value;
+      const moment = frequency === 'dagelijks' ? document.getElementById('medMoment').value : '';
+      const indication = frequency === 'indien-nodig' ? document.getElementById('medIndication').value : '';
+
+      if (allData.filter(d => d.__type === 'schema').length >= 999) {
+        showToast('❌ Maximum van 999 medicaties bereikt', 'error');
+        return;
+      }
+
+      const medication = {
+        __type: 'schema',
+        medication_name: name,
+        dosage: dosage,
+        frequency: frequency,
+        moment: moment,
+        indication: indication,
+        is_active: true,
+        created_at: new Date().toISOString()
+      };
+
+      const result = editingMedication
+        ? await window.dataSdk.update({ ...medication, __backendId: editingMedication.__backendId })
+        : await window.dataSdk.create(medication);
+
+      if (result.isOk) {
+        showToast(editingMedication ? '✓ Medicatie bijgewerkt' : '✓ Medicatie toegevoegd');
+        closeModal();
+        editingMedication = null;
+        switchTab('beheer');
+      } else {
+        showToast('❌ Opslaan mislukt', 'error');
+      }
+    }
+
+    function editMedication(med) {
+      editingMedication = med;
+      showAddMedicationModal();
+
+      setTimeout(() => {
+        document.getElementById('medName').value = med.medication_name;
+        document.getElementById('medDosage').value = med.dosage;
+        document.getElementById('medFrequency').value = med.frequency;
+        if (med.frequency === 'dagelijks') {
+          document.getElementById('medMoment').value = med.moment;
+        } else {
+          document.getElementById('medIndication').value = med.indication || '';
+        }
+        toggleMomentField();
+      }, 100);
+    }
+
+    async function deleteMedication(backendId) {
+      const med = allData.find(m => m.__backendId === backendId);
+      if (!med) return;
+
+      const updated = { ...med, is_active: false };
+      const result = await window.dataSdk.update(updated);
+
+      if (result.isOk) {
+        showToast('✓ Medicatie verwijderd');
+        switchTab('beheer');
+      } else {
+        showToast('❌ Verwijderen mislukt', 'error');
+      }
+    }
+
+    function editAdministrationTime(backendId) {
+      const admin = allData.find(a => a.__backendId === backendId);
+      if (!admin) return;
+
+      const currentDate = new Date(admin.administered_at);
+      const modal = document.createElement('div');
+      modal.className = 'modal-overlay';
+      modal.innerHTML = `
+        <div class="modal-content">
+          <h3 class="text-xl font-bold mb-4">⏰ Tijdstip aanpassen</h3>
+          <form onsubmit="event.preventDefault(); updateAdministrationTime('${backendId}')">
+            <div class="space-y-4">
+              <div>
+                <label class="block text-sm font-medium mb-1">Datum</label>
+                <input type="date" id="editDate" value="${currentDate.toISOString().split('T')[0]}" required class="w-full border border-gray-300 rounded-lg px-3 py-2">
+              </div>
+              <div>
+                <label class="block text-sm font-medium mb-1">Tijd</label>
+                <input type="time" id="editTime" value="${currentDate.toTimeString().slice(0,5)}" required class="w-full border border-gray-300 rounded-lg px-3 py-2">
+              </div>
+              <div class="flex gap-3 mt-6">
+                <button type="submit" class="flex-1 bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg font-medium">
+                  Opslaan
+                </button>
+                <button type="button" onclick="closeModal()" class="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-700 px-4 py-2 rounded-lg font-medium">
+                  Annuleren
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      `;
+      document.body.appendChild(modal);
+    }
+
+    async function updateAdministrationTime(backendId) {
+      const admin = allData.find(a => a.__backendId === backendId);
+      if (!admin) {
+        showToast('❌ Toediening niet gevonden', 'error');
+        return;
+      }
+
+      const dateInput = document.getElementById('editDate');
+      const timeInput = document.getElementById('editTime');
+
+      const date = dateInput.value;
+      const time = timeInput.value;
+
+      const newDateTime = new Date(`${date}T${time}:00`);
+
+      const updated = {
+        ...admin,
+        administered_at: newDateTime.toISOString()
+      };
+
+      const result = await window.dataSdk.update(updated);
+
+      if (result.isOk) {
+        showToast('✓ Tijdstip aangepast');
+        closeModal();
+        setTimeout(() => switchTab(currentTab), 300);
+      } else {
+        showToast('❌ Aanpassen mislukt - probeer opnieuw', 'error');
+      }
+    }
+
+    function printSchema() {
+      const printWindow = window.open('', '_blank');
+      const schemaContent = document.querySelector('.print-content');
+      if (!schemaContent || !printWindow) return;
+
+      printWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>Medicatieschema</title>
+          <style>
+            body { font-family: system-ui, -apple-system, sans-serif; margin: 20px; }
+            table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+            th, td { border: 1px solid #333; padding: 8px; text-align: left; }
+            th { background-color: #f3f4f6; }
+            h2 { color: #2563eb; }
+            .header { background: linear-gradient(to right, #2563eb, #1e40af); color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+          </style>
+        </head>
+        <body>
+          ${schemaContent.innerHTML}
+        </body>
+        </html>
+      `);
+
+      printWindow.document.close();
+      printWindow.onload = () => {
+        printWindow.print();
+        printWindow.close();
+      };
+    }
+
+    function openSchemaPreviewTab() {
+      const schemaElement = document.getElementById('schemaPrintable');
+
+      if (!schemaElement) {
+        showToast('❌ Geen schema om te tonen', 'error');
+        return;
+      }
+
+      const html = schemaElement.outerHTML;
+      if (!html.trim()) {
+        showToast('❌ Schema is leeg', 'error');
+        return;
+      }
+
+      const w = window.open('', '_blank');
+      if (!w) {
+        showToast('❌ Kon nieuw tabblad niet openen - controleer popup blocker', 'error');
+        return;
+      }
+
+      w.document.write(`
+        <!DOCTYPE html>
+        <html lang="nl">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Medicatieschema - Preview</title>
+          <style>
+            body { font-family: 'Segoe UI', Arial, sans-serif; margin: 0; background: #f8fafc; padding: 24px; }
+            .wrap { max-width: 1100px; margin: 0 auto; }
+            table { border-collapse: collapse; width: 100%; margin-bottom: 24px; }
+            th, td { border: 1px solid #d1d5db; padding: 12px; text-align: left; }
+            th { background-color: #f3f4f6; font-weight: 600; }
+            .bg-gradient-to-r { background: linear-gradient(to right, #2563eb, #1e40af); }
+            .text-white { color: white; }
+            .p-6 { padding: 24px; }
+            .rounded-t-lg { border-radius: 8px 8px 0 0; }
+            .rounded-lg { border-radius: 8px; }
+            .shadow-md { box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
+            .mb-2 { margin-bottom: 8px; }
+            .mb-4 { margin-bottom: 16px; }
+            .mb-6 { margin-bottom: 24px; }
+            .mt-6 { margin-top: 24px; }
+            .-mx-6 { margin-left: -24px; margin-right: -24px; }
+            .-mt-6 { margin-top: -24px; }
+            .text-2xl { font-size: 24px; }
+            .text-lg { font-size: 18px; }
+            .text-sm { font-size: 14px; }
+            .font-bold { font-weight: 700; }
+            .font-semibold { font-weight: 600; }
+            .text-gray-500 { color: #6b7280; }
+            .bg-white { background: white; }
+            .bg-gray-100 { background-color: #f3f4f6; }
+            .border { border: 1px solid #d1d5db; }
+            .border-gray-300 { border-color: #d1d5db; }
+            .space-y-1 > * + * { margin-top: 4px; }
+            @media print { body { background: white; padding: 0; } }
+          </style>
+        </head>
+        <body>
+          <div class="wrap">
+            ${html}
+          </div>
+        </body>
+        </html>
+      `);
+
+      w.document.close();
+      showToast('✓ Preview geopend in nieuw tabblad');
+    }
+
+    function closeModal() {
+      document.querySelectorAll('.modal-overlay').forEach(m => m.remove());
+    }
+
+    function showToast(message, type = 'success') {
+      const toast = document.createElement('div');
+      toast.className = 'toast';
+      toast.textContent = message;
+      if (type === 'error') toast.style.background = '#ef4444';
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 3000);
+    }
+
+    function exportData() {
+      const dataStr = JSON.stringify(allData, null, 2);
+      const dataBlob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(dataBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `medicatie-data-${getBrusselsTime().toISOString().split('T')[0]}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      showToast('✓ Data geëxporteerd');
+    }
+
+    function generateWeekReport() { showToast('📅 Week rapport wordt voorbereid...'); }
+    function generateMonthReport() { showToast('📆 Maand rapport wordt voorbereid...'); }
+
+    // Start applicatie (veilig na load)
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", init);
+    } else {
+      init();
+    }
+  </script>
+ </body>
+</html>
